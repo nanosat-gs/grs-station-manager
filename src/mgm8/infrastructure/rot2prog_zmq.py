@@ -7,7 +7,7 @@ adapter só traduz a porta RotorPort para a API dessa classe — não reimplemen
 protocolo de baixo nível.
 
 Import de `rotor_manager` é feito só quando este adapter é de fato instanciado (ver
-`mgm8.rotctld.main`), para que `pyzmq` continue sendo uma dependência opcional.
+`mgm8.rotor_zmq.main`), para que `pyzmq` continue sendo uma dependência opcional.
 
 LIMITAÇÃO CONHECIDA: `RotorManager.request_status()` não correlaciona pedido e
 resposta — cada chamada publica um pedido e lê uma única mensagem pendente do
@@ -21,9 +21,10 @@ sequência na resposta de status).
 
 Consequência prática observada com o gpredict real: com o "Cycle" do rotor
 configurado em 10ms (padrão do gpredict), o volume de pedidos de status supera
-a capacidade do RotorManager de responder em ordem, e a conexão rotctld fica
-instável (reconecta em loop, painel de posição nunca preenche). Configurar
-Cycle >= 20ms no gpredict resolve. Ver README, seção "Bridge rotctld".
+a capacidade do RotorManager de responder em ordem, e a conexão rotctld entre
+o gpredict e o GRS Manager fica instável (reconecta em loop, painel de
+posição nunca preenche). Configurar Cycle >= 20ms no gpredict resolve. Ver
+docs/rotor-control.md.
 """
 
 from __future__ import annotations

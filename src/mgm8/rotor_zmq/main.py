@@ -1,8 +1,9 @@
-"""Composition root do bridge rotctld: único módulo que conhece implementações concretas.
+"""Composition root do Station Manager (controle de rotor): único módulo que
+conhece implementações concretas.
 
-Escolhe o rotor (mock ou ZMQ) pela flag --rotor, monta o TrackingService e
-sobe o servidor rotctld. Nem o núcleo, nem os adapters, conhecem uns aos
-outros — só este módulo os amarra.
+Escolhe o rotor (mock ou ZMQ/Rot2Prog) pela flag --rotor, monta o
+TrackingService e expõe via ZMQ REP pro GRS Manager consumir. Nem o núcleo,
+nem os adapters, conhecem uns aos outros — só este módulo os amarra.
 """
 
 from __future__ import annotations
@@ -13,12 +14,9 @@ import logging
 from mgm8.application.tracking_service import TrackingService
 from mgm8.domain.ports import RotorPort
 from mgm8.infrastructure.mock_rotor import MockRotor
-from mgm8.rotctld.server import RotctldServer
+from mgm8.rotor_zmq.server import RotorZmqServer
 
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 4533
-# Porta PUSH/PULL de comandos do RotorManager (vendor/grs-rotor-manager). A porta de
-# status (SUB, 5560) é fixa dentro da própria RotorManager e não é configurável aqui.
+DEFAULT_BIND_ADDRESS = "tcp://127.0.0.1:5580"
 DEFAULT_ROTOR_ADDRESS = "tcp://127.0.0.1:5559"
 
 
@@ -34,9 +32,8 @@ def _build_rotor(rotor_kind: str, rotor_address: str) -> RotorPort:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Ponte rotctld -> rotor físico (Rot2Prog via ZMQ)")
-    parser.add_argument("--host", default=DEFAULT_HOST, help="Endereço onde o servidor rotctld escuta")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Porta rotctld (padrão hamlib: 4533)")
+    parser = argparse.ArgumentParser(description="Station Manager: controle de rotor, exposto via ZMQ pro GRS Manager")
+    parser.add_argument("--bind", default=DEFAULT_BIND_ADDRESS, help="Endereço ZMQ (REP) onde este serviço escuta")
     parser.add_argument("--rotor", choices=["mock", "zmq"], default="mock", help="Implementação de rotor a usar")
     parser.add_argument("--rotor-address", default=DEFAULT_ROTOR_ADDRESS,
                          help="Endereço ZMQ (PUSH) do RotorManager/simulador (--rotor zmq)")
@@ -47,16 +44,16 @@ def main() -> None:
 
     rotor = _build_rotor(args.rotor, args.rotor_address)
     service = TrackingService(rotor)
-    server = RotctldServer(args.host, args.port, service)
+    server = RotorZmqServer(args.bind, service)
 
-    logger.info("Servindo rotctld em %s:%d (rotor=%s)", args.host, args.port, args.rotor)
+    logger.info("Station Manager (rotor) escutando em %s (rotor=%s)", args.bind, args.rotor)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         logger.info("Encerrando por interrupção do usuário.")
     finally:
-        server.shutdown()
-        server.server_close()
+        server.stop()
+        server.close()
         close = getattr(rotor, "close", None)
         if callable(close):
             close()
