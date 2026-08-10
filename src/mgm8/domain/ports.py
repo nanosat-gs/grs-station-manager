@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
-from mgm8.domain.models import OperationalEvent, ScheduledPass, SchedulingConflict
+from mgm8.domain.models import AntennaPosition, OperationalEvent, ScheduledPass, SchedulingConflict
 
 
 class ScheduledPassRepository(Protocol):
@@ -18,3 +18,21 @@ class SchedulingConflictRepository(Protocol):
 
 class OperationalEventRepository(Protocol):
     def add(self, event: OperationalEvent) -> None: ...
+
+
+class RotorPort(Protocol):
+    """Porta de saída: comanda o rotor físico (ou um substituto de testes)."""
+
+    def move_to(self, position: AntennaPosition) -> None: ...
+    def read_position(self) -> AntennaPosition: ...
+    def stop(self) -> None: ...
+    def park(self) -> None: ...
+
+
+class RotorControlUseCase(Protocol):
+    """Porta de entrada: casos de uso expostos ao adapter rotctld."""
+
+    def set_target(self, azimuth_degrees: float, elevation_degrees: float) -> AntennaPosition: ...
+    def get_position(self) -> AntennaPosition: ...
+    def stop(self) -> None: ...
+    def park(self) -> None: ...
