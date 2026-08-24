@@ -94,6 +94,30 @@ class AntennaPosition:
 
 
 @dataclass(frozen=True)
+class SatellitePointing:
+    """Onde um satélite está no céu, visto da estação, num dado instante.
+
+    Distinto de AntennaPosition: aqui a elevação pode ser NEGATIVA, porque o
+    satélite passa a maior parte do tempo abaixo do horizonte. Só depois de
+    decidir que vale apontar é que isso vira uma AntennaPosition, cujos limites
+    são os do rotor e não os do céu.
+    """
+
+    azimuth_degrees: float
+    elevation_degrees: float
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.azimuth_degrees <= 360:
+            raise ValueError("Azimuth must be between 0 and 360 degrees.")
+        if not -90 <= self.elevation_degrees <= 90:
+            raise ValueError("Elevation must be between -90 and 90 degrees.")
+
+    @property
+    def is_above_horizon(self) -> bool:
+        return self.elevation_degrees > 0.0
+
+
+@dataclass(frozen=True)
 class ApplicationHealth:
     status: HealthStatus
     checked_at: datetime
