@@ -1,6 +1,7 @@
 """Adapter de saída: rotor Rot2Prog físico, comandado via ZMQ.
 
-Envolve a classe `RotorManager` do submódulo vendorizado `vendor/grs-rotor-manager`,
+Envolve a classe `RotorManager` copiada do grs-rotor-manager (ver
+`mgm8/vendor/UPSTREAM.md`),
 que já implementa a codificação binária do protocolo Rot2Prog e a comunicação ZMQ
 (PUSH de comandos / SUB de status, porta 5560 fixa no lado do RotorManager). Este
 adapter só traduz a porta RotorPort para a API dessa classe — não reimplementa o
@@ -29,17 +30,10 @@ docs/rotor-control.md.
 
 from __future__ import annotations
 
-import sys
 import time
-from pathlib import Path
-
-_VENDOR_ROOT = Path(__file__).resolve().parents[3] / "vendor" / "grs-rotor-manager"
-if str(_VENDOR_ROOT) not in sys.path:
-    sys.path.insert(0, str(_VENDOR_ROOT))
-
-from rotor_manager import RotorManager  # noqa: E402
 
 from mgm8.domain.models import AntennaPosition
+from mgm8.vendor.rotor_manager import RotorManager
 
 # Mitiga o "slow joiner" do ZMQ PUB/SUB descrito no README do grs-rotor-manager:
 # as primeiras mensagens de status podem ser perdidas antes da inscrição SUB
