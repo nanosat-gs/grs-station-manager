@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mgm8"
+version = "0.2.0"
+description = "Station Manager: controla o rotor e conduz uma passagem do AOS ao LOS"
+readme = "README.md"
+requires-python = ">=3.11"
+
+# A spacelab-tracking entra como referência direta PEP 508. No monorepo ela era
+# instalada por caminho relativo, o que não é portável — uma git URL é.
+#
+# Pinada em TAG, nunca em branch: com @main a linha do `pip install` no
+# Dockerfile nunca muda, o Docker reaproveita a layer em cache, e uma correção
+# na biblioteca nunca chega no container sem dar erro nenhum.
+dependencies = [
+    "spacelab-tracking @ git+https://github.com/nanosat-gs/spacelab-tracking@v0.1.0",
+]
+
+[project.optional-dependencies]
+# pyzmq é opcional porque o import é tardio: o caminho `--rotor mock` não
+# precisa dele. Mas entra em `dev` porque os testes de ZMQ usam importorskip —
+# sem ele instalado eles seriam PULADOS em silêncio, que é pior que falhar.
+zmq = ["pyzmq>=25,<26"]
+dev = ["pytest>=8.0,<9.0", "pyzmq>=25,<26"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
