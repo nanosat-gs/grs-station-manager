@@ -12,8 +12,11 @@ PACKET_START = 0x57  # 'W'
 PACKET_END   = 0x20  # ' '
 PACKET_SIZE  = 11
 
+DEFAULT_STATUS_ADDRESS = "tcp://localhost:5560"
+
+
 class RotorManager:
-    def __init__(self, rotor_address):
+    def __init__(self, rotor_address, status_address=DEFAULT_STATUS_ADDRESS):
         self.context = zmq.Context()
 
         # PUSH socket — sends commands to the rotor
@@ -22,7 +25,7 @@ class RotorManager:
 
         # SUB socket — receives status responses from the rotor
         self.status_socket = self.context.socket(zmq.SUB)
-        self.status_socket.connect("tcp://localhost:5560")
+        self.status_socket.connect(status_address)
         self.status_socket.setsockopt_string(zmq.SUBSCRIBE, "status")
 
     def _encode_angle(self, angle_deg):
