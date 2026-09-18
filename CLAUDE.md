@@ -45,11 +45,11 @@ setpoint por segundo.
 
 ## Armadilhas
 
-- **`--rotor mock` no Docker.** O `RotorManager` (em `src/mgm8/vendor/`) tem o
-  socket SUB de status fixo em `tcp://localhost:5560`, o que não funciona entre
-  containers. Hardware real e simulador continuam fora do Docker. A cópia está
-  sob nosso controle (ver `src/mgm8/vendor/UPSTREAM.md`), então parametrizar
-  esse endereço é uma mudança possível — só não foi feita junto da cópia.
+- **`--rotor mock` no Docker.** O socket SUB de status do `RotorManager` (em
+  `src/mgm8/vendor/`) já é parametrizável via `--rotor-status-address` (default
+  `tcp://127.0.0.1:5560`, o mesmo valor de antes), mas isso resolve só metade
+  do problema: o hardware/simulador em si ainda roda fora do Docker, então
+  `--rotor mock` continua sendo o default em containers até isso mudar.
 - **`src/mgm8/vendor/` é código de terceiros copiado**, não escrito aqui. Antes
   era um submódulo alcançado por `sys.path.insert`, que quebrava assim que o
   pacote mudasse de lugar. Ver `UPSTREAM.md` para origem e commit.

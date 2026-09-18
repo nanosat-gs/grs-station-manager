@@ -31,16 +31,17 @@ from mgm8.rotor_zmq.server import RotorZmqServer
 
 DEFAULT_BIND_ADDRESS = "tcp://127.0.0.1:5580"
 DEFAULT_ROTOR_ADDRESS = "tcp://127.0.0.1:5559"
+DEFAULT_ROTOR_STATUS_ADDRESS = "tcp://127.0.0.1:5560"
 
 
-def _build_rotor(rotor_kind: str, rotor_address: str) -> RotorPort:
+def _build_rotor(rotor_kind: str, rotor_address: str, rotor_status_address: str) -> RotorPort:
     if rotor_kind == "mock":
         return MockRotor()
     if rotor_kind == "zmq":
         # Import tardio: pyzmq só precisa estar instalado quando --rotor zmq é usado.
         from mgm8.infrastructure.rot2prog_zmq import Rot2ProgZmqRotor
 
-        return Rot2ProgZmqRotor(rotor_address)
+        return Rot2ProgZmqRotor(rotor_address, rotor_status_address)
     raise ValueError(f"Tipo de rotor desconhecido: {rotor_kind}")
 
 
@@ -50,6 +51,12 @@ def main() -> None:
     parser.add_argument("--rotor", choices=["mock", "zmq"], default="mock", help="Implementação de rotor a usar")
     parser.add_argument("--rotor-address", default=DEFAULT_ROTOR_ADDRESS,
                          help="Endereço ZMQ (PUSH) do RotorManager/simulador (--rotor zmq)")
+    parser.add_argument("--rotor-status-address", default=DEFAULT_ROTOR_STATUS_ADDRESS,
+                         help="Endereço ZMQ (SUB) de status do RotorManager/simulador (--rotor zmq). "
+                              "Antes era fixo em tcp://localhost:5560 dentro do RotorManager, o que "
+                              "só funcionava com o simulador no mesmo host de rede; agora é "
+                              "configurável, o que permite apontar para um RotorManager em outro "
+                              "container ou host.")
 
     # Coordenadas da estação: configuração do processo, não da requisição. Quem
     # manda track_satellite diz qual satélite rastrear, nunca de onde observar.
@@ -83,7 +90,7 @@ def main() -> None:
         "altitude_m": args.gs_altitude,
     }
 
-    rotor = _build_rotor(args.rotor, args.rotor_address)
+    rotor = _build_rotor(args.rotor, args.rotor_address, args.rotor_status_address)
     service = TrackingService(rotor)
     satellite_tracking = SatelliteTrackingService(
         rotor_control=service,

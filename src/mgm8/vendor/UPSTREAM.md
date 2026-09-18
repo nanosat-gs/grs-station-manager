@@ -8,7 +8,10 @@
 - **Licença:** o repositório de origem não declara licença. É código do próprio
   SpaceLab, usado aqui dentro do laboratório; uma redistribuição externa
   precisa resolver isso antes.
-- **Alterações:** nenhuma. Cópia byte a byte do upstream.
+- **Alterações:** `RotorManager.__init__` ganhou um segundo parâmetro opcional
+  `status_address` (default `tcp://localhost:5560`, o mesmo valor fixo de
+  antes — comportamento idêntico para quem não passar o argumento). Ver "O que
+  a cópia destrava" abaixo.
 
 `tools/rotor_simulator.py` veio do mesmo commit, também sem alteração. Ele não
 é instalado com o pacote — serve para exercitar o caminho `--rotor zmq` sem
@@ -27,11 +30,15 @@ commit. O submódulo cobrava toda a sua cerimônia (`--recursive`, ponteiro,
 
 ### O que a cópia destrava
 
-`RotorManager.__init__` tem o socket SUB de status fixo em
-`tcp://localhost:5560`, o que só funciona com o simulador no mesmo host de
-rede — nunca entre containers. É por isso que o `docker-compose.yml` força
-`--rotor mock`, e por isso o rotor real continua rodando fora do Docker.
+`RotorManager.__init__` tinha o socket SUB de status fixo em
+`tcp://localhost:5560`, o que só funcionava com o simulador no mesmo host de
+rede — nunca entre containers. Não foi parametrizado junto da cópia de
+propósito: mover código e mudar comportamento no mesmo passo torna impossível
+saber qual dos dois quebrou.
 
-Com o arquivo sob controle, parametrizar esse endereço vira uma mudança
-possível. Não foi feita junto da cópia de propósito: mover código e mudar
-comportamento no mesmo passo torna impossível saber qual dos dois quebrou.
+Esse endereço agora é parametrizável (`status_address`, ver "Alterações"
+acima) e exposto pelo Station Manager via `--rotor-status-address` (ver
+`mgm8.rotor_zmq.main`). O `docker-compose.yml` continua forçando `--rotor
+mock` porque isso resolve só metade do problema — o hardware/simulador em si
+ainda roda fora do Docker; o rotor real entre containers segue como trabalho
+futuro.

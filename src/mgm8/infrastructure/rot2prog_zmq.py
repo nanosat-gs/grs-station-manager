@@ -3,9 +3,8 @@
 Envolve a classe `RotorManager` copiada do grs-rotor-manager (ver
 `mgm8/vendor/UPSTREAM.md`),
 que já implementa a codificação binária do protocolo Rot2Prog e a comunicação ZMQ
-(PUSH de comandos / SUB de status, porta 5560 fixa no lado do RotorManager). Este
-adapter só traduz a porta RotorPort para a API dessa classe — não reimplementa o
-protocolo de baixo nível.
+(PUSH de comandos / SUB de status). Este adapter só traduz a porta RotorPort
+para a API dessa classe — não reimplementa o protocolo de baixo nível.
 
 Import de `rotor_manager` é feito só quando este adapter é de fato instanciado (ver
 `mgm8.rotor_zmq.main`), para que `pyzmq` continue sendo uma dependência opcional.
@@ -33,7 +32,7 @@ from __future__ import annotations
 import time
 
 from mgm8.domain.models import AntennaPosition
-from mgm8.vendor.rotor_manager import RotorManager
+from mgm8.vendor.rotor_manager import DEFAULT_STATUS_ADDRESS, RotorManager
 
 # Mitiga o "slow joiner" do ZMQ PUB/SUB descrito no README do grs-rotor-manager:
 # as primeiras mensagens de status podem ser perdidas antes da inscrição SUB
@@ -51,8 +50,8 @@ PARK_POSITION = AntennaPosition(0.0, 0.0)
 class Rot2ProgZmqRotor:
     """Implementa RotorPort delegando à RotorManager (protocolo Rot2Prog via ZMQ)."""
 
-    def __init__(self, rotor_address: str) -> None:
-        self._manager = RotorManager(rotor_address)
+    def __init__(self, rotor_address: str, status_address: str = DEFAULT_STATUS_ADDRESS) -> None:
+        self._manager = RotorManager(rotor_address, status_address)
         time.sleep(STARTUP_DELAY_SECONDS)
 
     def move_to(self, position: AntennaPosition) -> None:
