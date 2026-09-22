@@ -84,7 +84,7 @@ def build_service(source, **kwargs):
     rotor = FakeRotor()
     service = SatelliteTrackingService(
         rotor_control=TrackingService(rotor),
-        pointing_source_factory=lambda orbital_data, satellite_name=None: source,
+        pointing_source_factory=lambda orbital_data, satellite_name=None, downlink_frequency_hz=None: source,
         update_interval_seconds=kwargs.pop("update_interval_seconds", TICK),
         **kwargs,
     )
@@ -232,7 +232,7 @@ def test_start_replaces_an_active_tracking():
     sources = {"current": first}
     service = SatelliteTrackingService(
         rotor_control=TrackingService(rotor),
-        pointing_source_factory=lambda orbital_data, satellite_name=None: sources["current"],
+        pointing_source_factory=lambda orbital_data, satellite_name=None, downlink_frequency_hz=None: sources["current"],
         update_interval_seconds=TICK,
     )
     try:
@@ -255,7 +255,7 @@ def test_invalid_orbital_data_does_not_interrupt_active_tracking():
     rotor = FakeRotor()
     good = FakePointingSource(name="SAT-BOM")
 
-    def factory(orbital_data, satellite_name=None):
+    def factory(orbital_data, satellite_name=None, downlink_frequency_hz=None):
         if orbital_data.get("broken"):
             raise ValueError("dados orbitais inválidos")
         return good
@@ -315,7 +315,7 @@ def test_transient_rotor_failure_does_not_end_the_pass():
     rotor_control = FlakyRotorControl()
     service = SatelliteTrackingService(
         rotor_control=rotor_control,
-        pointing_source_factory=lambda orbital_data, satellite_name=None: FakePointingSource(),
+        pointing_source_factory=lambda orbital_data, satellite_name=None, downlink_frequency_hz=None: FakePointingSource(),
         update_interval_seconds=TICK,
     )
     try:

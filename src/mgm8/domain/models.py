@@ -106,6 +106,16 @@ class SatellitePointing:
     azimuth_degrees: float
     elevation_degrees: float
 
+    # Desvio Doppler da portadora de descida, em Hz, no instante deste
+    # apontamento. Positivo enquanto o satélite se aproxima.
+    #
+    # None, e não 0.0, quando ninguém disse qual é a frequência do satélite:
+    # zero afirmaria "sem desvio", que é falso e mandaria o receptor sintonizar
+    # na frequência nominal no meio de uma passagem — justamente onde o desvio
+    # é maior. Ausência de dado e ausência de desvio não podem ter a mesma
+    # representação.
+    doppler_shift_hz: float | None = None
+
     def __post_init__(self) -> None:
         if not 0 <= self.azimuth_degrees <= 360:
             raise ValueError("Azimuth must be between 0 and 360 degrees.")

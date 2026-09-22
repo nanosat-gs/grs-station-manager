@@ -38,7 +38,22 @@ class Sgp4PointingSource:
         orbital_data: dict,
         satellite_name: str | None = None,
         station: dict | None = None,
+        downlink_frequency_hz: float | None = None,
     ) -> None:
+        # A portadora de descida é por PASSAGEM, não por instante: é ela que
+        # transforma a taxa de variação da distância (km/s) num desvio em Hz.
+        # None quando ninguém disse qual é — e aí o apontamento sai sem
+        # Doppler, em vez de sair com um número inventado.
+        #
+        # Conferida ANTES de propagar a órbita: é a validação barata, e montar
+        # o Satrec com dados orbitais ruins mascararia o erro de unidade com um
+        # erro de TLE.
+        if downlink_frequency_hz is not None and downlink_frequency_hz <= 0:
+            raise ValueError(
+                f"frequência de descida inválida: {downlink_frequency_hz}"
+            )
+        self._downlink_frequency_hz = downlink_frequency_hz
+
         data = OrbitalData.from_json(orbital_data)
         self._satrec = build_satellite(data)
         self._satellite_name = satellite_name or data.satellite_name or UNKNOWN_SATELLITE_NAME
@@ -58,9 +73,19 @@ class Sgp4PointingSource:
             when=when.astimezone(timezone.utc),
             station=self._station,
         )
+        # doppler_shift_hz vem da spacelab_tracking, e não de uma conta
+        # repetida aqui: a fórmula tem de ter um dono só, ou a estação passa a
+        # discordar de si mesma sobre onde o satélite está.
+        doppler = (
+            info.doppler_shift_hz(self._downlink_frequency_hz)
+            if self._downlink_frequency_hz is not None
+            else None
+        )
+
         return SatellitePointing(
             azimuth_degrees=info.topocentric.azimuth_deg,
             elevation_degrees=info.topocentric.elevation_deg,
+            doppler_shift_hz=doppler,
         )
 
 
@@ -71,7 +96,11 @@ def build_pointing_source_factory(station: dict | None = None):
     comando `track_satellite` diz qual satélite rastrear, nunca de onde.
     """
 
-    def factory(orbital_data: dict, satellite_name: str | None = None) -> Sgp4PointingSource:
-        return Sgp4PointingSource(orbital_data, satellite_name, station)
+    def factory(
+        orbital_data: dict,
+        satellite_name: str | None = None,
+        downlink_frequency_hz: float | None = None,
+    ) -> Sgp4PointingSource:
+        return Sgp4PointingSource(orbital_data, satellite_name, station, downlink_frequency_hz)
 
     return factory

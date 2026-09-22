@@ -27,9 +27,11 @@ from typing import Optional
 
 from mgm8.domain.models import SatellitePointing
 from mgm8.domain.ports import (
+    NullTuningBroadcast,
     PointingSourceFactory,
     RotorControlUseCase,
     SatellitePointingSource,
+    TuningBroadcast,
 )
 
 logger = logging.getLogger(__name__)
@@ -81,9 +83,13 @@ class SatelliteTrackingService:
         update_interval_seconds: float = DEFAULT_UPDATE_INTERVAL_SECONDS,
         min_elevation_degrees: float = DEFAULT_MIN_ELEVATION_DEGREES,
         park_on_finish: bool = True,
+        tuning_broadcast: TuningBroadcast | None = None,
     ) -> None:
         self._rotor_control = rotor_control
         self._pointing_source_factory = pointing_source_factory
+        # NullTuningBroadcast, e não None: rodar sem caminho de RX continua
+        # sendo caso de primeira classe, e o laço não testa nada a cada tick.
+        self._tuning = tuning_broadcast if tuning_broadcast is not None else NullTuningBroadcast()
         self._update_interval_seconds = update_interval_seconds
         self._min_elevation_degrees = min_elevation_degrees
         self._park_on_finish = park_on_finish
@@ -105,8 +111,16 @@ class SatelliteTrackingService:
         orbital_data: dict,
         until: datetime,
         satellite_name: str | None = None,
+        downlink_frequency_hz: float | None = None,
     ) -> TrackingStatus:
-        """Começa a rastrear até `until`. Substitui um rastreamento em curso."""
+        """Começa a rastrear até `until`. Substitui um rastreamento em curso.
+
+        `downlink_frequency_hz` é a portadora nominal do satélite. Vem no
+        payload do comando, e não do banco, porque este serviço não conhece o
+        Postgres — quem lê o banco é o TC Scheduler, que já monta a ordem de
+        rastreamento. Sem ela a passagem é rastreada igual, só sem anúncio de
+        sintonia.
+        """
         if until.tzinfo is None:
             raise ValueError("`until` deve ser timezone-aware (ISO 8601 com fuso).")
         until = until.astimezone(timezone.utc)
@@ -123,9 +137,15 @@ class SatelliteTrackingService:
         # Construída fora do lock: montar o Satrec pode falhar com dados
         # orbitais inválidos, e um rastreamento em curso não deve ser
         # interrompido por uma requisição malformada.
-        source = self._pointing_source_factory(orbital_data, satellite_name)
+        source = self._pointing_source_factory(orbital_data, satellite_name, downlink_frequency_hz)
 
         self._stop_thread()
+
+        # A nominal é anunciada ANTES de a thread começar: o sintetizador
+        # recusa Doppler sem frequência de referência, então a ordem entre as
+        # duas mensagens é parte do contrato, não detalhe de implementação.
+        if downlink_frequency_hz is not None:
+            self._tuning.announce_frequency(downlink_frequency_hz)
 
         with self._lock:
             self._source = source
@@ -231,6 +251,17 @@ class SatelliteTrackingService:
                         "%s abaixo da elevação mínima (%.2f < %.2f); mantendo posição.",
                         name, pointing.elevation_degrees, self._min_elevation_degrees,
                     )
+
+                # O Doppler sai da MESMA propagação que acabou de posicionar
+                # a antena — não há segunda conta, nem segunda fonte de verdade
+                # sobre onde o satélite está.
+                if pointing.doppler_shift_hz is not None:
+                    try:
+                        self._tuning.announce_doppler(pointing.doppler_shift_hz)
+                    except Exception:
+                        # Anunciar sintonia é acessório ao apontamento. Um
+                        # sintetizador fora do ar não pode custar a passagem.
+                        logger.exception("Falha ao anunciar o Doppler de %s", name)
 
                 with self._lock:
                     self._last_pointing = pointing

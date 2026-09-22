@@ -38,6 +38,55 @@ class SatellitePointingSource(Protocol):
     def pointing_at(self, when: datetime) -> SatellitePointing: ...
 
 
+class TuningBroadcast(Protocol):
+    """Porta de saída: anuncia a quem recebe em que frequência sintonizar.
+
+    Duas mensagens, e a separação entre elas é o contrato com o
+    `grs-frequency-synthesizer`, que soma as duas:
+
+        announce_frequency   a portadora NOMINAL do satélite, uma vez por
+                             passagem. Não muda enquanto a passagem dura.
+        announce_doppler     o desvio do instante, a cada tick do laço de
+                             apontamento.
+
+    Separadas de propósito: quem consome precisa distinguir "mudou de satélite"
+    de "o satélite se moveu". Mandar só a soma faria um salto de dezenas de
+    megahertz (troca de satélite) e um de alguns quilohertz (Doppler) chegarem
+    indistinguíveis, e o receptor não teria como decidir se vale re-sintonizar
+    o hardware ou corrigir em software.
+
+    O Station Manager é quem publica porque é ele que já propaga a órbita a
+    cada segundo para apontar a antena — o Doppler sai da MESMA conta que o
+    azimute e a elevação, e calcular de novo noutro serviço seria duas fontes
+    de verdade sobre onde o satélite está.
+    """
+
+    def announce_frequency(self, hz: float) -> None: ...
+    def announce_doppler(self, hz: float) -> None: ...
+
+
+class NullTuningBroadcast:
+    """TuningBroadcast que não anuncia nada.
+
+    Mora no domínio, e não ao lado do adapter ZMQ, por uma razão prática: é o
+    padrão do laço de apontamento, e a camada de aplicação não pode importar
+    infraestrutura. Aqui, importá-lo não arrasta o pyzmq — que no mgm8 é
+    dependência OPCIONAL, instalada só quando o rotor ZMQ é usado.
+
+    Rodar o Station Manager sem caminho de recepção continua sendo caso de
+    primeira classe, e não um modo degradado cheio de `if`.
+    """
+
+    def announce_frequency(self, hz: float) -> None:
+        pass
+
+    def announce_doppler(self, hz: float) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
 class PointingSourceFactory(Protocol):
     """Constrói uma SatellitePointingSource a partir dos dados orbitais que
     chegaram pela rede.
@@ -48,5 +97,8 @@ class PointingSourceFactory(Protocol):
     """
 
     def __call__(
-        self, orbital_data: dict, satellite_name: str | None = None
+        self,
+        orbital_data: dict,
+        satellite_name: str | None = None,
+        downlink_frequency_hz: float | None = None,
     ) -> SatellitePointingSource: ...

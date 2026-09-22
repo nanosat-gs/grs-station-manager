@@ -31,6 +31,9 @@ from mgm8.rotor_zmq.server import RotorZmqServer
 
 DEFAULT_BIND_ADDRESS = "tcp://127.0.0.1:5580"
 DEFAULT_ROTOR_ADDRESS = "tcp://127.0.0.1:5559"
+# Espelha tuning_zmq.DEFAULT_TUNING_BIND_ADDRESS sem importar o módulo, que
+# arrastaria o pyzmq para dentro de um boot que pode não precisar dele.
+DEFAULT_TUNING_BIND_ADDRESS = "tcp://0.0.0.0:5581"
 
 
 def _build_rotor(rotor_kind: str, rotor_address: str) -> RotorPort:
@@ -71,6 +74,11 @@ def main() -> None:
                               "está do outro lado da Terra e o azimute varia de forma abrupta. "
                               "Use um valor negativo para exercitar o laço sem esperar uma "
                               "passagem real.")
+    parser.add_argument("--tuning-bind", default=None,
+                         help="Endereço ZMQ (PUB) onde anunciar frequência e Doppler para o "
+                              "grs-frequency-synthesizer. Omitido = não anuncia nada, que é o "
+                              "padrão de uma estação sem caminho de recepção. Exemplo: "
+                              f"{DEFAULT_TUNING_BIND_ADDRESS}")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -85,11 +93,22 @@ def main() -> None:
 
     rotor = _build_rotor(args.rotor, args.rotor_address)
     service = TrackingService(rotor)
+
+    # Import tardio pelo mesmo motivo do rotor ZMQ: pyzmq é dependência
+    # opcional do mgm8, e uma estação sem caminho de recepção não deve precisar
+    # dela para apontar a antena.
+    tuning = None
+    if args.tuning_bind:
+        from mgm8.infrastructure.tuning_zmq import ZmqTuningBroadcast
+
+        tuning = ZmqTuningBroadcast(args.tuning_bind)
+
     satellite_tracking = SatelliteTrackingService(
         rotor_control=service,
         pointing_source_factory=build_pointing_source_factory(ground_station),
         update_interval_seconds=args.pointing_interval,
         min_elevation_degrees=args.pointing_min_elevation,
+        tuning_broadcast=tuning,
     )
     server = RotorZmqServer(args.bind, service, tracking=satellite_tracking)
 
@@ -104,6 +123,8 @@ def main() -> None:
     except KeyboardInterrupt:
         logger.info("Encerrando por interrupção do usuário.")
     finally:
+        if tuning is not None:
+            tuning.close()
         satellite_tracking.close()
         server.stop()
         server.close()

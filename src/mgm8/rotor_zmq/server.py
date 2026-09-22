@@ -21,7 +21,8 @@ uma única ordem cobre a passagem inteira, e o Station Manager conduz o
 apontamento sozinho até o LOS (ver `mgm8.application.satellite_tracking_service`):
 
     {"cmd": "track_satellite", "orbital_data": {...}, "until": "<ISO 8601>",
-     "satellite_name": "<str, opcional>"}
+     "satellite_name": "<str, opcional>",
+     "downlink_frequency_hz": <número, opcional>}
         -> {"ok": true, "tracking": {...}}
     {"cmd": "stop_tracking"}
         -> {"ok": true}
@@ -122,6 +123,11 @@ class RotorZmqServer:
                     orbital_data=request["orbital_data"],
                     until=_parse_until(request["until"]),
                     satellite_name=request.get("satellite_name"),
+                    # Opcional: a portadora do satélite vem do banco, que este
+                    # serviço não conhece — quem a lê e a manda junto é o TC
+                    # Scheduler. Sem ela a passagem é rastreada igual, só sem
+                    # anúncio de sintonia.
+                    downlink_frequency_hz=request.get("downlink_frequency_hz"),
                 )
                 return {"ok": True, "tracking": status.to_dict()}
             if command == "stop_tracking":

@@ -14,6 +14,21 @@ os serviços são diferentes:
 |---|---|---|
 | 5580 | ZMQ REP (JSON) | **expõe** — quem pede: GRS Manager e TC Scheduler |
 | 5559 / 5560 | ZMQ PUSH / SUB (Rot2Prog binário) | **consome** — o Rotor Manager |
+| 5581 | ZMQ PUB (`freq` / `doppler`) | **anuncia** — quem ouve: `grs-frequency-synthesizer` |
+
+### Anúncio de sintonia (5581)
+
+Só existe com `--tuning-bind`. Omitido, o serviço não anuncia nada, que é o
+padrão de uma estação sem caminho de recepção.
+
+    [b"freq",    b"<Hz>"]   portadora NOMINAL, uma vez por passagem
+    [b"doppler", b"<Hz>"]   desvio do instante, a cada tick de apontamento
+
+O sintetizador soma as duas e publica a frequência efetiva na :5557, de onde o
+receptor de IQ (retune por hardware) ou o demodulador (correção digital) a
+consomem — **a mesma mensagem serve aos dois**; qual deles age é configuração.
+
+5581, e não 5559: a 5559 já é do Rotor Manager.
 
 ## O protocolo da 5580 é definido aqui
 
@@ -44,6 +59,27 @@ passagem não a interrompe. O Scheduler manda **uma ordem por passagem**, não u
 setpoint por segundo.
 
 ## Armadilhas
+
+- **`freq` e `doppler` são duas mensagens, não uma soma.** Quem consome precisa
+  distinguir "trocou de satélite" (salto de dezenas de MHz) de "o satélite se
+  moveu" (alguns kHz). Mandar só a soma faria os dois chegarem indistinguíveis,
+  e o receptor não teria como decidir entre re-sintonizar o hardware e corrigir
+  em software.
+- **Doppler ausente é `None`, nunca `0.0`.** Zero afirmaria "sem desvio", o que
+  mandaria sintonizar na nominal justamente no meio da passagem, onde o desvio é
+  maior. Ausência de dado e ausência de desvio não podem ter a mesma
+  representação.
+- **PUB descarta o que publica sem assinante conectado.** Um sintetizador que
+  sobe no meio de uma passagem perderia o `freq` que a abriu e ficaria sem
+  referência. Por isso `ZmqTuningBroadcast` reenvia a nominal a cada 30 anúncios
+  de Doppler.
+- **A frequência do satélite vem no payload do `track_satellite`, não do
+  banco.** Este serviço não conhece o Postgres — quem lê é o TC Scheduler, que
+  já monta a ordem de rastreamento. Sem a frequência a passagem é rastreada
+  igual, só sem anúncio de sintonia.
+- **`NullTuningBroadcast` mora no domínio, não ao lado do adapter ZMQ.** A
+  camada de aplicação não pode importar infraestrutura, e importá-lo de lá
+  arrastaria o pyzmq — que aqui é dependência OPCIONAL.
 
 - **`--rotor mock` no Docker.** O `RotorManager` (em `src/mgm8/vendor/`) tem o
   socket SUB de status fixo em `tcp://localhost:5560`, o que não funciona entre

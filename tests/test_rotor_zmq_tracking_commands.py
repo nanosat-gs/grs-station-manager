@@ -66,8 +66,9 @@ def server():
     """Station Manager com rastreamento autônomo habilitado."""
     tracking = SatelliteTrackingService(
         rotor_control=TrackingService(MockRotor()),
-        pointing_source_factory=lambda orbital_data, satellite_name=None: FakePointingSource(
-            satellite_name or "FAKE-SAT"
+        pointing_source_factory=(
+            lambda orbital_data, satellite_name=None, downlink_frequency_hz=None:
+            FakePointingSource(satellite_name or "FAKE-SAT")
         ),
         update_interval_seconds=TICK,
     )
