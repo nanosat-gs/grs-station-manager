@@ -256,3 +256,116 @@ class StationState:
     def clear_active_pass(self, now: datetime | None = None) -> None:
         self.active_pass_id = self.active_satellite_id = None
         self.transition_to(OperationalMode.IDLE, now)
+
+
+# --- Downlinks e rádios ---------------------------------------------------------
+#
+# Um satélite pode descer em mais de uma frequência (o FS-2: beacon em 145,9 MHz
+# a 1200 baud e dados em 468,4 MHz a 4800 baud). A estação tem um rádio por
+# faixa, todos atrás do MESMO rotor — então os rádios não recebem satélites
+# diferentes ao mesmo tempo, e sim frequências diferentes do satélite da vez.
+# Cada downlink vai para o rádio cuja faixa o contém.
+
+
+@dataclass(frozen=True)
+class Downlink:
+    """Uma portadora de descida do satélite rastreado."""
+
+    name: str
+    frequency_hz: float
+
+    def __post_init__(self) -> None:
+        if not self.name or not str(self.name).strip():
+            raise ValueError("downlink sem nome")
+        if not self.frequency_hz or self.frequency_hz <= 0:
+            raise ValueError(f"downlink {self.name}: frequência inválida {self.frequency_hz}")
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Downlink":
+        if not isinstance(data, dict):
+            raise ValueError(f"downlink precisa ser um objeto: {data!r}")
+        return cls(name=str(data["name"]).strip(), frequency_hz=float(data["frequency_hz"]))
+
+
+@dataclass(frozen=True)
+class RadioBand:
+    """Um rádio da estação e a faixa que a cadeia de RF dele cobre (antena,
+    LNA, filtros). O nome é o canal dos anúncios de sintonia: `freq.<nome>`."""
+
+    name: str
+    min_hz: float
+    max_hz: float
+
+    def __post_init__(self) -> None:
+        if not self.name or not self.name.replace("-", "").replace("_", "").isalnum():
+            raise ValueError(f"nome de rádio inválido: {self.name!r}")
+        if not 0 < self.min_hz < self.max_hz:
+            raise ValueError(f"rádio {self.name}: faixa inválida {self.min_hz}-{self.max_hz}")
+
+    def covers(self, frequency_hz: float) -> bool:
+        return self.min_hz <= frequency_hz <= self.max_hz
+
+
+def parse_radios(text: str) -> list[RadioBand]:
+    """`vhf=143000000-148000000,uhf=462000000-470000000` -> rádios.
+
+    Vazio é válido: estação sem rádios declarados anuncia como antes, nos
+    tópicos sem canal.
+    """
+    radios: list[RadioBand] = []
+    for item in filter(None, (part.strip() for part in (text or "").split(","))):
+        try:
+            name, band = item.split("=", 1)
+            low, high = band.split("-", 1)
+            radios.append(RadioBand(name.strip(), float(low), float(high)))
+        except ValueError as error:
+            raise ValueError(f"rádio mal escrito {item!r} (esperava nome=min-max em Hz): {error}") from None
+    names = [radio.name for radio in radios]
+    if len(set(names)) != len(names):
+        raise ValueError(f"rádio repetido em {text!r}")
+    return radios
+
+
+@dataclass(frozen=True)
+class DownlinkRoute:
+    """Um downlink e o rádio que vai ouvi-lo (None = canal sem nome, o modo de
+    uma estação sem rádios declarados)."""
+
+    downlink: Downlink
+    radio: str | None
+
+
+def route_downlinks(
+    downlinks: list[Downlink], radios: list[RadioBand]
+) -> tuple[list[DownlinkRoute], list[str]]:
+    """Decide que rádio ouve cada downlink. Devolve (rotas, avisos).
+
+    Sem rádios declarados: só o PRIMEIRO downlink, no canal sem nome — é o
+    comportamento de antes, com uma portadora por passagem.
+
+    Com rádios: cada downlink vai ao rádio cuja faixa o contém. Downlink sem
+    rádio, ou um segundo downlink na faixa de um rádio já ocupado, fica de fora
+    COM aviso: um rádio sintoniza uma frequência por vez.
+    """
+    if not downlinks:
+        return [], []
+    if not radios:
+        extra = [d.name for d in downlinks[1:]]
+        warnings = ([f"sem rádios declarados: só {downlinks[0].name} é anunciado "
+                     f"(ignorados: {', '.join(extra)})"] if extra else [])
+        return [DownlinkRoute(downlinks[0], None)], warnings
+
+    routes: list[DownlinkRoute] = []
+    warnings: list[str] = []
+    taken: dict[str, str] = {}
+    for downlink in downlinks:
+        radio = next((r for r in radios if r.covers(downlink.frequency_hz)), None)
+        if radio is None:
+            warnings.append(f"{downlink.name} ({downlink.frequency_hz / 1e6:.4f} MHz): "
+                            "nenhum rádio da estação cobre essa frequência")
+        elif radio.name in taken:
+            warnings.append(f"{downlink.name}: o rádio {radio.name} já ouve {taken[radio.name]}")
+        else:
+            taken[radio.name] = downlink.name
+            routes.append(DownlinkRoute(downlink, radio.name))
+    return routes, warnings

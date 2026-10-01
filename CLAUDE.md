@@ -14,7 +14,7 @@ os serviços são diferentes:
 |---|---|---|
 | 5580 | ZMQ REP (JSON) | **expõe** — quem pede: GRS Manager e TC Scheduler |
 | 5559 / 5560 | ZMQ PUSH / SUB (Rot2Prog binário) | **consome** — o Rotor Manager |
-| 5581 | ZMQ PUB (`freq` / `doppler`) | **anuncia** — quem ouve: `grs-frequency-synthesizer` |
+| 5581 | ZMQ PUB (`freq` / `doppler`, por rádio) | **anuncia** — quem ouve: um `grs-frequency-synthesizer` por rádio |
 
 ### Anúncio de sintonia (5581)
 
@@ -27,6 +27,20 @@ padrão de uma estação sem caminho de recepção.
 O sintetizador soma as duas e publica a frequência efetiva na :5557, de onde o
 receptor de IQ (retune por hardware) ou o demodulador (correção digital) a
 consomem — **a mesma mensagem serve aos dois**; qual deles age é configuração.
+
+**Mais de um rádio** (`--radios vhf=143000000-148000000,uhf=...`, ou a variável
+`STATION_RADIOS`): o `track_satellite` traz uma lista de `downlinks`
+(`[{name, frequency_hz}]`), cada um vai ao rádio cuja faixa o contém
+(`domain.models.route_downlinks`) e é anunciado no canal dele:
+`freq.vhf`/`doppler.vhf`, `freq.uhf`/... Um downlink sem rádio, ou um segundo
+na mesma faixa, fica de fora com aviso no log. Sem rádios declarados, só o
+primeiro downlink é anunciado, nos tópicos sem canal — o comportamento antigo.
+
+O Doppler de referência (o primeiro downlink roteado) vem da
+spacelab-tracking; os outros saem por proporção (o desvio é f·v/c). E é
+calculado meio intervalo à frente do tick (`doppler_lead_seconds`, que o
+`main` põe em intervalo/2): o receptor fica com a sintonia de um tick até o
+próximo, e no meio desse intervalo o erro de dente de serra cai pela metade.
 
 5581, e não 5559: a 5559 já é do Rotor Manager.
 
@@ -59,6 +73,14 @@ passagem não a interrompe. O Scheduler manda **uma ordem por passagem**, não u
 setpoint por segundo.
 
 ## Armadilhas
+
+- **O `[doppler]` sai com o satélite abaixo do horizonte também.** A elevação
+  mínima (`--pointing-min-elevation`) só decide se o ROTOR se move; a
+  sintonia é anunciada a cada tick da passagem.
+- **`RotorZmqServer.close()` espera o laço sair antes de fechar o socket.**
+  Fechar um socket ZMQ de outra thread enquanto o `recv` está em curso fazia
+  o libzmq ABORTAR o processo (assertion, não exceção) — a suíte caía ao
+  acaso, uma vez em duas.
 
 - **`freq` e `doppler` são duas mensagens, não uma soma.** Quem consome precisa
   distinguir "trocou de satélite" (salto de dezenas de MHz) de "o satélite se

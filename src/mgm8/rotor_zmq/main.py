@@ -15,6 +15,7 @@ Nem o núcleo, nem os adapters, conhecem uns aos outros — só este módulo os 
 from __future__ import annotations
 
 import argparse
+import os
 import logging
 
 from spacelab_tracking import config as tracking_config
@@ -24,6 +25,7 @@ from mgm8.application.satellite_tracking_service import (
     SatelliteTrackingService,
 )
 from mgm8.application.tracking_service import TrackingService
+from mgm8.domain.models import parse_radios
 from mgm8.domain.ports import RotorPort
 from mgm8.infrastructure.mock_rotor import MockRotor
 from mgm8.infrastructure.sgp4_pointing import build_pointing_source_factory
@@ -79,7 +81,14 @@ def main() -> None:
                               "grs-frequency-synthesizer. Omitido = não anuncia nada, que é o "
                               "padrão de uma estação sem caminho de recepção. Exemplo: "
                               f"{DEFAULT_TUNING_BIND_ADDRESS}")
+    parser.add_argument("--radios", default=os.environ.get("STATION_RADIOS", ""),
+                         help="Rádios da estação e a faixa de cada um, em Hz: "
+                              "vhf=143000000-148000000,uhf=462000000-470000000. Cada downlink "
+                              "do satélite é anunciado no canal do rádio que o cobre "
+                              "(freq.vhf, doppler.vhf...). Padrão: a variável STATION_RADIOS. "
+                              "Vazio = um canal só, sem nome.")
     args = parser.parse_args()
+    radios = parse_radios(args.radios)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logger = logging.getLogger(__name__)
@@ -109,10 +118,17 @@ def main() -> None:
         update_interval_seconds=args.pointing_interval,
         min_elevation_degrees=args.pointing_min_elevation,
         tuning_broadcast=tuning,
+        radios=radios,
+        # Doppler para o meio do intervalo entre dois ajustes: metade do erro
+        # de dente de serra (ver SatelliteTrackingService).
+        doppler_lead_seconds=args.pointing_interval / 2,
     )
     server = RotorZmqServer(args.bind, service, tracking=satellite_tracking)
 
     logger.info("Station Manager (rotor) escutando em %s (rotor=%s)", args.bind, args.rotor)
+    if radios:
+        logger.info("Rádios: %s", ", ".join(
+            f"{r.name} {r.min_hz / 1e6:g}-{r.max_hz / 1e6:g} MHz" for r in radios))
     logger.info(
         "Estação: %s (%.4f, %.4f, %.0f m) | apontamento a cada %.1fs, elevação mínima %.1f graus",
         ground_station["name"], ground_station["latitude_deg"], ground_station["longitude_deg"],

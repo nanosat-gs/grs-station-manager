@@ -59,10 +59,14 @@ class TuningBroadcast(Protocol):
     cada segundo para apontar a antena — o Doppler sai da MESMA conta que o
     azimute e a elevação, e calcular de novo noutro serviço seria duas fontes
     de verdade sobre onde o satélite está.
+
+    `channel` é o rádio (`vhf`, `uhf`...): com ele, os tópicos viram
+    `freq.<canal>` e `doppler.<canal>`, e cada rádio tem o seu sintetizador.
+    None mantém os tópicos sem canal, de uma estação com um rádio só.
     """
 
-    def announce_frequency(self, hz: float) -> None: ...
-    def announce_doppler(self, hz: float) -> None: ...
+    def announce_frequency(self, hz: float, channel: str | None = None) -> None: ...
+    def announce_doppler(self, hz: float, channel: str | None = None) -> None: ...
 
 
 class NullTuningBroadcast:
@@ -77,10 +81,10 @@ class NullTuningBroadcast:
     primeira classe, e não um modo degradado cheio de `if`.
     """
 
-    def announce_frequency(self, hz: float) -> None:
+    def announce_frequency(self, hz: float, channel: str | None = None) -> None:
         pass
 
-    def announce_doppler(self, hz: float) -> None:
+    def announce_doppler(self, hz: float, channel: str | None = None) -> None:
         pass
 
     def close(self) -> None:

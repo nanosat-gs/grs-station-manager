@@ -218,3 +218,39 @@ def test_tracking_commands_report_when_feature_is_disabled(
 
     client.send_json({"cmd": "set_target", "azimuth_degrees": 90.0, "elevation_degrees": 20.0})
     assert client.recv_json()["ok"] is True
+
+
+def test_track_satellite_aceita_a_lista_de_downlinks(server, client_context):
+    """Sem rádios declarados, só o primeiro downlink é ouvido, no canal único."""
+    client = make_client(client_context, server)
+    client.send_json({
+        "cmd": "track_satellite",
+        "orbital_data": {"source": "tle"},
+        "until": in_future(60),
+        "downlinks": [{"name": "beacon", "frequency_hz": 145900000},
+                      {"name": "dados", "frequency_hz": 468400000}],
+    })
+
+    reply = client.recv_json()
+
+    assert reply["ok"] is True
+    assert [(d["name"], d["radio"]) for d in reply["tracking"]["downlinks"]] == [("beacon", None)]
+
+
+@pytest.mark.parametrize("downlinks", [
+    {"name": "beacon"},
+    [{"name": "beacon"}],
+    [{"name": "beacon", "frequency_hz": -1}],
+])
+def test_track_satellite_recusa_downlinks_malformados(server, client_context, downlinks):
+    client = make_client(client_context, server)
+    client.send_json({
+        "cmd": "track_satellite",
+        "orbital_data": {"source": "tle"},
+        "until": in_future(60),
+        "downlinks": downlinks,
+    })
+
+    reply = client.recv_json()
+
+    assert reply["ok"] is False

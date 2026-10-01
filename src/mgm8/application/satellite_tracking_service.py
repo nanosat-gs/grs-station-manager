@@ -25,7 +25,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from mgm8.domain.models import SatellitePointing
+from mgm8.domain.models import (
+    Downlink,
+    DownlinkRoute,
+    RadioBand,
+    SatellitePointing,
+    route_downlinks,
+)
 from mgm8.domain.ports import (
     NullTuningBroadcast,
     PointingSourceFactory,
@@ -55,6 +61,8 @@ class TrackingStatus:
     until: datetime
     last_pointing: Optional[SatellitePointing]
     is_pointing: bool  # False quando o satélite está abaixo da elevação mínima
+    # O que cada rádio está ouvindo, e o último Doppler anunciado para ele.
+    downlinks: tuple[dict, ...] = ()
 
     def to_dict(self) -> dict:
         return {
@@ -65,6 +73,7 @@ class TrackingStatus:
             "elevation_degrees": (
                 self.last_pointing.elevation_degrees if self.last_pointing else None
             ),
+            "downlinks": list(self.downlinks),
         }
 
 
@@ -84,6 +93,8 @@ class SatelliteTrackingService:
         min_elevation_degrees: float = DEFAULT_MIN_ELEVATION_DEGREES,
         park_on_finish: bool = True,
         tuning_broadcast: TuningBroadcast | None = None,
+        radios: list[RadioBand] | None = None,
+        doppler_lead_seconds: float = 0.0,
     ) -> None:
         self._rotor_control = rotor_control
         self._pointing_source_factory = pointing_source_factory
@@ -93,6 +104,13 @@ class SatelliteTrackingService:
         self._update_interval_seconds = update_interval_seconds
         self._min_elevation_degrees = min_elevation_degrees
         self._park_on_finish = park_on_finish
+        self._radios = list(radios or [])
+        # Para quando o Doppler é calculado, à frente do instante do tick. O
+        # receptor fica com a sintonia de um tick até o próximo; calculada
+        # para o MEIO desse intervalo (lead = intervalo/2), o erro vai de
+        # -½ a +½ intervalo em vez de 0 a 1 — metade do pior caso. Zero
+        # mantém a conta no instante do tick.
+        self._doppler_lead = timedelta(seconds=doppler_lead_seconds)
 
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
@@ -103,6 +121,8 @@ class SatelliteTrackingService:
         self._until: Optional[datetime] = None
         self._last_pointing: Optional[SatellitePointing] = None
         self._is_pointing = False
+        self._routes: list[DownlinkRoute] = []
+        self._last_doppler: dict[str, float] = {}
 
     # --- API pública --------------------------------------------------------
 
@@ -112,15 +132,27 @@ class SatelliteTrackingService:
         until: datetime,
         satellite_name: str | None = None,
         downlink_frequency_hz: float | None = None,
+        downlinks: list[Downlink] | None = None,
     ) -> TrackingStatus:
         """Começa a rastrear até `until`. Substitui um rastreamento em curso.
 
-        `downlink_frequency_hz` é a portadora nominal do satélite. Vem no
+        `downlinks` são as portadoras do satélite (o FS-2 tem duas). Vêm no
         payload do comando, e não do banco, porque este serviço não conhece o
         Postgres — quem lê o banco é o TC Scheduler, que já monta a ordem de
-        rastreamento. Sem ela a passagem é rastreada igual, só sem anúncio de
-        sintonia.
+        rastreamento. `downlink_frequency_hz` é a forma antiga, de uma
+        portadora só, e vira o downlink "principal". Sem nenhuma das duas a
+        passagem é rastreada igual, só sem anúncio de sintonia.
         """
+        if downlinks is None:
+            downlinks = ([Downlink("principal", downlink_frequency_hz)]
+                         if downlink_frequency_hz is not None else [])
+        routes, warnings = route_downlinks(list(downlinks), self._radios)
+        for warning in warnings:
+            logger.warning("%s: %s", satellite_name or "satélite", warning)
+        # A propagação calcula o Doppler de UMA portadora, a de referência; as
+        # outras saem por proporção (o desvio é f·v/c, linear na portadora).
+        # Assim a fórmula continua tendo um dono só, a spacelab_tracking.
+        reference_hz = routes[0].downlink.frequency_hz if routes else None
         if until.tzinfo is None:
             raise ValueError("`until` deve ser timezone-aware (ISO 8601 com fuso).")
         until = until.astimezone(timezone.utc)
@@ -137,33 +169,37 @@ class SatelliteTrackingService:
         # Construída fora do lock: montar o Satrec pode falhar com dados
         # orbitais inválidos, e um rastreamento em curso não deve ser
         # interrompido por uma requisição malformada.
-        source = self._pointing_source_factory(orbital_data, satellite_name, downlink_frequency_hz)
+        source = self._pointing_source_factory(orbital_data, satellite_name, reference_hz)
 
         self._stop_thread()
 
         # A nominal é anunciada ANTES de a thread começar: o sintetizador
         # recusa Doppler sem frequência de referência, então a ordem entre as
         # duas mensagens é parte do contrato, não detalhe de implementação.
-        if downlink_frequency_hz is not None:
-            self._tuning.announce_frequency(downlink_frequency_hz)
+        for route in routes:
+            self._announce_frequency(route)
 
         with self._lock:
             self._source = source
             self._until = until
             self._last_pointing = None
             self._is_pointing = False
+            self._routes = routes
+            self._last_doppler = {}
             self._cancel = threading.Event()
             self._thread = threading.Thread(
                 target=self._run,
-                args=(source, until, self._cancel),
+                args=(source, until, self._cancel, routes, reference_hz),
                 name=f"tracking-{source.satellite_name}",
                 daemon=True,
             )
             self._thread.start()
 
         logger.info(
-            "Rastreando %s até %s (a cada %.1fs)",
+            "Rastreando %s até %s (a cada %.1fs)%s",
             source.satellite_name, until.isoformat(), self._update_interval_seconds,
+            "".join(f" | {r.downlink.name} {r.downlink.frequency_hz / 1e6:.4f} MHz -> "
+                    f"{r.radio or 'canal único'}" for r in routes),
         )
         return self._snapshot()
 
@@ -175,6 +211,8 @@ class SatelliteTrackingService:
             self._until = None
             self._last_pointing = None
             self._is_pointing = False
+            self._routes = []
+            self._last_doppler = {}
 
     def status(self) -> Optional[TrackingStatus]:
         """Estado atual, ou None se nada está sendo rastreado."""
@@ -198,7 +236,25 @@ class SatelliteTrackingService:
             until=self._until or datetime.now(timezone.utc),
             last_pointing=self._last_pointing,
             is_pointing=self._is_pointing,
+            downlinks=tuple(
+                {
+                    "name": route.downlink.name,
+                    "frequency_hz": route.downlink.frequency_hz,
+                    "radio": route.radio,
+                    "doppler_hz": self._last_doppler.get(route.downlink.name),
+                }
+                for route in self._routes
+            ),
         )
+
+    def _announce_frequency(self, route: DownlinkRoute) -> None:
+        try:
+            if route.radio is None:
+                self._tuning.announce_frequency(route.downlink.frequency_hz)
+            else:
+                self._tuning.announce_frequency(route.downlink.frequency_hz, channel=route.radio)
+        except Exception:
+            logger.exception("Falha ao anunciar a frequência de %s", route.downlink.name)
 
     def _stop_thread(self) -> None:
         with self._lock:
@@ -215,6 +271,8 @@ class SatelliteTrackingService:
         source: SatellitePointingSource,
         until: datetime,
         cancel: threading.Event,
+        routes: list[DownlinkRoute] | None = None,
+        reference_hz: float | None = None,
     ) -> None:
         name = source.satellite_name
         try:
@@ -252,16 +310,30 @@ class SatelliteTrackingService:
                         name, pointing.elevation_degrees, self._min_elevation_degrees,
                     )
 
-                # O Doppler sai da MESMA propagação que acabou de posicionar
-                # a antena — não há segunda conta, nem segunda fonte de verdade
-                # sobre onde o satélite está.
-                if pointing.doppler_shift_hz is not None:
+                # O Doppler sai da MESMA fonte que acabou de posicionar a
+                # antena. Com antecipação, uma segunda propagação meio tick à
+                # frente; sem ela, o próprio apontamento do tick.
+                doppler_pointing = pointing
+                if routes and self._doppler_lead:
                     try:
-                        self._tuning.announce_doppler(pointing.doppler_shift_hz)
+                        doppler_pointing = source.pointing_at(now + self._doppler_lead)
                     except Exception:
-                        # Anunciar sintonia é acessório ao apontamento. Um
-                        # sintetizador fora do ar não pode custar a passagem.
-                        logger.exception("Falha ao anunciar o Doppler de %s", name)
+                        logger.exception("Falha ao calcular o Doppler de %s", name)
+                reference_doppler = doppler_pointing.doppler_shift_hz
+                if routes and reference_doppler is not None and reference_hz:
+                    for route in routes:
+                        hz = reference_doppler * route.downlink.frequency_hz / reference_hz
+                        try:
+                            if route.radio is None:
+                                self._tuning.announce_doppler(hz)
+                            else:
+                                self._tuning.announce_doppler(hz, channel=route.radio)
+                        except Exception:
+                            # Anunciar sintonia é acessório ao apontamento. Um
+                            # sintetizador fora do ar não pode custar a passagem.
+                            logger.exception("Falha ao anunciar o Doppler de %s", name)
+                        with self._lock:
+                            self._last_doppler[route.downlink.name] = hz
 
                 with self._lock:
                     self._last_pointing = pointing

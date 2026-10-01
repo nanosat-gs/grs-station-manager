@@ -10,6 +10,11 @@ Contrato, definido pelo sintetizador e espelhado aqui:
     [b"freq",    b"<Hz em ASCII>"]   portadora nominal, uma vez por passagem
     [b"doppler", b"<Hz em ASCII>"]   desvio do instante, a cada tick
 
+Com mais de um rádio, cada um tem o seu canal, e o tópico leva o nome dele:
+`freq.vhf`, `doppler.vhf`, `freq.uhf`... O sintetizador de cada rádio assina
+só o seu (`--channel`). Cuidado com o prefixo do ZMQ: assinar `freq` também
+recebe `freq.vhf` — quem assina sem canal tem de comparar o tópico inteiro.
+
 PUB e não REQ/REP: anunciar sintonia é difusão, não conversa. Ninguém responde,
 e o Station Manager não pode ficar esperando resposta no meio do laço que
 comanda o rotor — um sintetizador fora do ar não pode custar o apontamento.
@@ -51,29 +56,32 @@ class ZmqTuningBroadcast:
         self._socket.setsockopt(zmq.LINGER, 0)
         self._socket.bind(bind_address)
 
-        self._last_frequency_hz: float | None = None
-        self._doppler_since_frequency = 0
+        # Por canal: a última nominal e quantos Doppler saíram desde ela.
+        self._last_frequency_hz: dict[str | None, float] = {}
+        self._doppler_since_frequency: dict[str | None, int] = {}
 
         logger.info("Anúncios de sintonia em %s", bind_address)
 
-    def announce_frequency(self, hz: float) -> None:
-        self._last_frequency_hz = hz
-        self._doppler_since_frequency = 0
-        self._send(b"freq", hz)
+    def announce_frequency(self, hz: float, channel: str | None = None) -> None:
+        self._last_frequency_hz[channel] = hz
+        self._doppler_since_frequency[channel] = 0
+        self._send(_topic(b"freq", channel), hz)
 
-    def announce_doppler(self, hz: float) -> None:
+    def announce_doppler(self, hz: float, channel: str | None = None) -> None:
         # Reenvia a nominal de tempos em tempos: um assinante que conectou
         # depois do início da passagem nunca viu o `freq`, e o sintetizador
         # recusa Doppler sem frequência de referência. Sem isto, subir o
         # sintetizador no meio de uma passagem significa perder a passagem.
-        if self._last_frequency_hz is not None:
-            if self._doppler_since_frequency >= FREQUENCY_REPEAT_EVERY:
-                self._send(b"freq", self._last_frequency_hz)
-                self._doppler_since_frequency = 0
+        nominal = self._last_frequency_hz.get(channel)
+        if nominal is not None:
+            if self._doppler_since_frequency.get(channel, 0) >= FREQUENCY_REPEAT_EVERY:
+                self._send(_topic(b"freq", channel), nominal)
+                self._doppler_since_frequency[channel] = 0
             else:
-                self._doppler_since_frequency += 1
+                self._doppler_since_frequency[channel] = (
+                    self._doppler_since_frequency.get(channel, 0) + 1)
 
-        self._send(b"doppler", hz)
+        self._send(_topic(b"doppler", channel), hz)
 
     def _send(self, topic: bytes, hz: float) -> None:
         try:
@@ -90,3 +98,7 @@ class ZmqTuningBroadcast:
     def close(self) -> None:
         self._socket.close()
         self._context.term()
+
+
+def _topic(base: bytes, channel: str | None) -> bytes:
+    return base if channel is None else base + b"." + channel.encode()

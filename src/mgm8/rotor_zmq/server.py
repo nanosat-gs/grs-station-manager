@@ -22,7 +22,8 @@ apontamento sozinho até o LOS (ver `mgm8.application.satellite_tracking_service
 
     {"cmd": "track_satellite", "orbital_data": {...}, "until": "<ISO 8601>",
      "satellite_name": "<str, opcional>",
-     "downlink_frequency_hz": <número, opcional>}
+     "downlinks": [{"name": "<str>", "frequency_hz": <número>}, ...]   (opcional)
+     "downlink_frequency_hz": <número, opcional — forma antiga, um downlink só>}
         -> {"ok": true, "tracking": {...}}
     {"cmd": "stop_tracking"}
         -> {"ok": true}
@@ -42,12 +43,14 @@ thread por conexão).
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import datetime
 from typing import Optional
 
 import zmq
 
 from mgm8.application.satellite_tracking_service import SatelliteTrackingService
+from mgm8.domain.models import Downlink
 from mgm8.domain.ports import RotorControlUseCase
 
 logger = logging.getLogger(__name__)
@@ -77,6 +80,10 @@ class RotorZmqServer:
         self._socket.setsockopt(zmq.LINGER, 0)
         self._socket.bind(bind_address)
         self._running = False
+        # Setado quando ninguém está dentro de serve_forever. close() espera por
+        # ele antes de fechar o socket (ver close()).
+        self._idle = threading.Event()
+        self._idle.set()
 
     @property
     def endpoint(self) -> str:
@@ -85,18 +92,20 @@ class RotorZmqServer:
 
     def serve_forever(self) -> None:
         self._running = True
-        while self._running:
-            try:
-                request = self._socket.recv_json()
-            except zmq.Again:
-                continue
-            except zmq.ZMQError:
-                # Socket/context fechados por close() enquanto recv_json() estava
-                # bloqueado (pode acontecer se stop()+close() vierem em sequência
-                # rápida, antes do próximo timeout de RCVTIMEO). Encerra a thread
-                # em silêncio em vez de deixar a exceção subir sem tratamento.
-                return
-            self._socket.send_json(self._dispatch(request))
+        self._idle.clear()
+        try:
+            while self._running:
+                try:
+                    request = self._socket.recv_json()
+                except zmq.Again:
+                    continue
+                except zmq.ZMQError:
+                    # Socket ou context fechados por fora. Encerra em silêncio
+                    # em vez de deixar a exceção subir sem tratamento.
+                    return
+                self._socket.send_json(self._dispatch(request))
+        finally:
+            self._idle.set()
 
     def _dispatch(self, request: object) -> dict[str, object]:
         try:
@@ -128,6 +137,9 @@ class RotorZmqServer:
                     # Scheduler. Sem ela a passagem é rastreada igual, só sem
                     # anúncio de sintonia.
                     downlink_frequency_hz=request.get("downlink_frequency_hz"),
+                    # Cada portadora vai ao rádio cuja faixa a contém; ver
+                    # mgm8.domain.models.route_downlinks.
+                    downlinks=_parse_downlinks(request.get("downlinks")),
                 )
                 return {"ok": True, "tracking": status.to_dict()}
             if command == "stop_tracking":
@@ -155,6 +167,16 @@ class RotorZmqServer:
         self._running = False
 
     def close(self) -> None:
+        """Para o laço e só então fecha o socket.
+
+        Socket ZMQ não é thread-safe: fechá-lo de outra thread enquanto
+        serve_forever está dentro do recv fazia o libzmq ABORTAR o processo
+        (assertion, não exceção) — a suíte de testes caía ao acaso, uma vez em
+        duas. Aqui o laço é avisado e sai no próximo timeout de recv (500 ms).
+        """
+        self._running = False
+        if not self._idle.wait(timeout=POLL_TIMEOUT_MS / 1000 + 2.0):
+            logger.warning("serve_forever não saiu a tempo; fechando o socket mesmo assim")
         self._socket.close()
         self._context.term()
 
@@ -171,3 +193,11 @@ def _parse_until(raw: object) -> datetime:
     if parsed.tzinfo is None:
         raise ValueError(f"`until` precisa incluir o fuso horário: {raw!r}")
     return parsed
+
+
+def _parse_downlinks(raw: object) -> list[Downlink] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise ValueError("downlinks precisa ser uma lista")
+    return [Downlink.from_dict(item) for item in raw]
