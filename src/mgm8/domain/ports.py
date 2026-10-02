@@ -67,6 +67,9 @@ class TuningBroadcast(Protocol):
 
     def announce_frequency(self, hz: float, channel: str | None = None) -> None: ...
     def announce_doppler(self, hz: float, channel: str | None = None) -> None: ...
+    # O ajuste fino medido (AFC), separado do Doppler pelo mesmo motivo que o
+    # Doppler é separado da nominal: quem consome precisa saber o que mudou.
+    def announce_offset(self, hz: float, channel: str | None = None) -> None: ...
 
 
 class NullTuningBroadcast:
@@ -85,6 +88,9 @@ class NullTuningBroadcast:
         pass
 
     def announce_doppler(self, hz: float, channel: str | None = None) -> None:
+        pass
+
+    def announce_offset(self, hz: float, channel: str | None = None) -> None:
         pass
 
     def close(self) -> None:

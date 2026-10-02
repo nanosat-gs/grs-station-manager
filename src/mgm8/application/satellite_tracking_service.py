@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -30,6 +31,7 @@ from mgm8.domain.models import (
     DownlinkRoute,
     RadioBand,
     SatellitePointing,
+    afc_step,
     route_downlinks,
 )
 from mgm8.domain.ports import (
@@ -95,6 +97,10 @@ class SatelliteTrackingService:
         tuning_broadcast: TuningBroadcast | None = None,
         radios: list[RadioBand] | None = None,
         doppler_lead_seconds: float = 0.0,
+        afc_gain: float = 0.0,
+        afc_max_offset_hz: float = 8000.0,
+        afc_max_step_hz: float = 2000.0,
+        afc_settle_seconds: float = 1.5,
     ) -> None:
         self._rotor_control = rotor_control
         self._pointing_source_factory = pointing_source_factory
@@ -111,6 +117,17 @@ class SatelliteTrackingService:
         # -½ a +½ intervalo em vez de 0 a 1 — metade do pior caso. Zero
         # mantém a conta no instante do tick.
         self._doppler_lead = timedelta(seconds=doppler_lead_seconds)
+        # Ajuste fino pelo bloco FFT. Ganho 0 = desligado: nenhuma medida é
+        # aplicada e nenhum `offset` é anunciado (o sintetizador continua
+        # somando só nominal + Doppler, como antes).
+        self._afc_gain = afc_gain
+        self._afc_max_offset = afc_max_offset_hz
+        self._afc_max_step = afc_max_step_hz
+        # Depois de mudar o desvio, a sintonia nova leva um tick para ser
+        # anunciada e o receptor, para mudar; uma medida de rajada que chega
+        # nesse meio-tempo foi feita com a sintonia VELHA e seria somada duas
+        # vezes. Descarta-se o que chegar dentro deste intervalo.
+        self._afc_settle = afc_settle_seconds
 
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
@@ -123,6 +140,7 @@ class SatelliteTrackingService:
         self._is_pointing = False
         self._routes: list[DownlinkRoute] = []
         self._last_doppler: dict[str, float] = {}
+        self._afc: dict[str, dict] = {}
 
     # --- API pública --------------------------------------------------------
 
@@ -186,6 +204,11 @@ class SatelliteTrackingService:
             self._is_pointing = False
             self._routes = routes
             self._last_doppler = {}
+            # Cada passagem começa do zero: o erro do oscilador aprendido numa
+            # passagem vai ao operador (pelo Scheduler) como sugestão de
+            # corrigir a frequência cadastrada, em vez de virar estado
+            # escondido aqui dentro.
+            self._afc = {route.radio or "": self._new_afc() for route in routes}
             self._cancel = threading.Event()
             self._thread = threading.Thread(
                 target=self._run,
@@ -213,6 +236,38 @@ class SatelliteTrackingService:
             self._is_pointing = False
             self._routes = []
             self._last_doppler = {}
+            self._afc = {}
+
+    def on_afc_measurement(self, radio: str, residual_hz: float, snr_db: float = 0.0) -> bool:
+        """Uma medida do bloco FFT do rádio `radio`. True se foi aplicada.
+
+        Ignorada fora de passagem, em rádio que esta passagem não usa, com a
+        malha desligada, ou logo depois de um ajuste (ver afc_settle).
+        """
+        if self._afc_gain <= 0:
+            return False
+        with self._lock:
+            state = self._afc.get(radio)
+            if self._source is None or state is None:
+                return False
+            now = time.monotonic()
+            state["last_residual_hz"] = residual_hz
+            if now - state["changed_at"] < self._afc_settle:
+                state["discarded"] += 1
+                return False
+            previous = state["offset_hz"]
+            state["offset_hz"] = afc_step(previous, residual_hz, self._afc_gain,
+                                          self._afc_max_offset, self._afc_max_step)
+            state["updates"] += 1
+            state["changed_at"] = now
+        logger.info("Ajuste fino %s: resíduo %+.0f Hz (SNR %.1f dB) -> desvio %+.0f Hz",
+                    radio, residual_hz, snr_db, state["offset_hz"])
+        return True
+
+    @staticmethod
+    def _new_afc() -> dict:
+        return {"offset_hz": 0.0, "updates": 0, "discarded": 0,
+                "last_residual_hz": None, "changed_at": float("-inf")}
 
     def status(self) -> Optional[TrackingStatus]:
         """Estado atual, ou None se nada está sendo rastreado."""
@@ -242,6 +297,10 @@ class SatelliteTrackingService:
                     "frequency_hz": route.downlink.frequency_hz,
                     "radio": route.radio,
                     "doppler_hz": self._last_doppler.get(route.downlink.name),
+                    "offset_hz": self._afc.get(route.radio or "", {}).get("offset_hz", 0.0),
+                    "afc_updates": self._afc.get(route.radio or "", {}).get("updates", 0),
+                    "afc_last_residual_hz": self._afc.get(route.radio or "", {}).get(
+                        "last_residual_hz"),
                 }
                 for route in self._routes
             ),
@@ -334,6 +393,15 @@ class SatelliteTrackingService:
                             logger.exception("Falha ao anunciar o Doppler de %s", name)
                         with self._lock:
                             self._last_doppler[route.downlink.name] = hz
+                            offset = self._afc.get(route.radio or "", {}).get("offset_hz", 0.0)
+                        if self._afc_gain > 0:
+                            try:
+                                if route.radio is None:
+                                    self._tuning.announce_offset(offset)
+                                else:
+                                    self._tuning.announce_offset(offset, channel=route.radio)
+                            except Exception:
+                                logger.exception("Falha ao anunciar o ajuste de %s", name)
 
                 with self._lock:
                     self._last_pointing = pointing

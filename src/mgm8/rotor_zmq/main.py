@@ -25,7 +25,7 @@ from mgm8.application.satellite_tracking_service import (
     SatelliteTrackingService,
 )
 from mgm8.application.tracking_service import TrackingService
-from mgm8.domain.models import parse_radios
+from mgm8.domain.models import parse_radios, parse_sources
 from mgm8.domain.ports import RotorPort
 from mgm8.infrastructure.mock_rotor import MockRotor
 from mgm8.infrastructure.sgp4_pointing import build_pointing_source_factory
@@ -87,8 +87,22 @@ def main() -> None:
                               "do satélite é anunciado no canal do rádio que o cobre "
                               "(freq.vhf, doppler.vhf...). Padrão: a variável STATION_RADIOS. "
                               "Vazio = um canal só, sem nome.")
+    parser.add_argument("--fft-sources", default=os.environ.get("STATION_FFT_SOURCES", ""),
+                         help="Blocos FFT por rádio: vhf=tcp://host:5582,uhf=... Liga o ajuste "
+                              "fino da sintonia (AFC) com as medidas deles. Padrão: a variável "
+                              "STATION_FFT_SOURCES. Vazio = sem ajuste fino.")
+    parser.add_argument("--afc-gain", type=float, default=0.5,
+                         help="Fração do resíduo medido aplicada por rajada (0 desliga)")
+    parser.add_argument("--afc-max-offset", type=float, default=8000.0,
+                         help="Desvio máximo que o ajuste fino pode acumular, em Hz")
+    parser.add_argument("--afc-max-step", type=float, default=2000.0,
+                         help="Passo máximo por medida, em Hz")
+    parser.add_argument("--spectrum-bind", default=None,
+                         help="Onde repassar o espectro dos blocos FFT (XPUB), para o Spectrum "
+                              "Monitor. Omitido = não repassa.")
     args = parser.parse_args()
     radios = parse_radios(args.radios)
+    fft_sources = parse_sources(args.fft_sources)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logger = logging.getLogger(__name__)
@@ -122,7 +136,21 @@ def main() -> None:
         # Doppler para o meio do intervalo entre dois ajustes: metade do erro
         # de dente de serra (ver SatelliteTrackingService).
         doppler_lead_seconds=args.pointing_interval / 2,
+        afc_gain=args.afc_gain if fft_sources else 0.0,
+        afc_max_offset_hz=args.afc_max_offset,
+        afc_max_step_hz=args.afc_max_step,
     )
+
+    # Import tardio, pelo mesmo motivo do tuning: pyzmq é opcional no mgm8.
+    afc_listener = spectrum_relay = None
+    if fft_sources:
+        from mgm8.infrastructure.afc_zmq import AfcListener, SpectrumRelay
+
+        afc_listener = AfcListener(fft_sources, satellite_tracking.on_afc_measurement)
+        afc_listener.start()
+        if args.spectrum_bind:
+            spectrum_relay = SpectrumRelay(fft_sources, args.spectrum_bind)
+            spectrum_relay.start()
     server = RotorZmqServer(args.bind, service, tracking=satellite_tracking)
 
     logger.info("Station Manager (rotor) escutando em %s (rotor=%s)", args.bind, args.rotor)
@@ -139,9 +167,15 @@ def main() -> None:
     except KeyboardInterrupt:
         logger.info("Encerrando por interrupção do usuário.")
     finally:
+        # A malha antes do anunciador: uma medida chegando no meio do
+        # encerramento não pode tentar anunciar num socket já fechado.
+        if afc_listener is not None:
+            afc_listener.stop()
+        if spectrum_relay is not None:
+            spectrum_relay.stop()
+        satellite_tracking.close()
         if tuning is not None:
             tuning.close()
-        satellite_tracking.close()
         server.stop()
         server.close()
         close = getattr(rotor, "close", None)

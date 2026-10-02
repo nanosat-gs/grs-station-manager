@@ -369,3 +369,39 @@ def route_downlinks(
             taken[radio.name] = downlink.name
             routes.append(DownlinkRoute(downlink, radio.name))
     return routes, warnings
+
+
+# --- Ajuste fino da sintonia (AFC) ---------------------------------------------
+#
+# O Doppler anunciado é PREVISTO pelo TLE. O que ele não vê — o erro do
+# oscilador do satélite (±10 ppm no TTC 2.0: até ±1,5 kHz em VHF, ±4,7 kHz em
+# UHF) e o erro do próprio TLE — é medido pelo bloco FFT de cada rádio, que diz
+# a que distância do centro a rajada chegou. A malha integra essa medida num
+# desvio que soma à sintonia: nominal + Doppler + desvio.
+
+
+def parse_sources(text: str) -> dict[str, str]:
+    """`vhf=tcp://172.30.0.24:5582,uhf=tcp://...` -> {rádio: endereço}."""
+    sources: dict[str, str] = {}
+    for item in filter(None, (part.strip() for part in (text or "").split(","))):
+        name, sep, address = item.partition("=")
+        if not sep or not name.strip() or not address.strip().startswith("tcp://"):
+            raise ValueError(f"fonte mal escrita {item!r} (esperava rádio=tcp://host:porta)")
+        if name.strip() in sources:
+            raise ValueError(f"rádio repetido em {text!r}")
+        sources[name.strip()] = address.strip()
+    return sources
+
+
+def afc_step(offset_hz: float, residual_hz: float, gain: float,
+             max_offset_hz: float, max_step_hz: float) -> float:
+    """Um passo do integrador: andar `gain` do resíduo medido, sem passar de
+    `max_step_hz` por medida nem de `max_offset_hz` no total.
+
+    Integrador, e não "copiar a medida": o resíduo é medido COM o desvio
+    atual já aplicado, então o desvio certo é o atual mais o que sobrou. O
+    ganho abaixo de 1 é o que impede uma medida ruim de jogar a sintonia
+    longe; os limites, o que impede uma sequência delas de fazer isso.
+    """
+    step = max(-max_step_hz, min(max_step_hz, gain * residual_hz))
+    return max(-max_offset_hz, min(max_offset_hz, offset_hz + step))

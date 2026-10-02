@@ -83,6 +83,9 @@ class ZmqTuningBroadcast:
 
         self._send(_topic(b"doppler", channel), hz)
 
+    def announce_offset(self, hz: float, channel: str | None = None) -> None:
+        self._send(_topic(b"offset", channel), hz)
+
     def _send(self, topic: bytes, hz: float) -> None:
         try:
             # Inteiro em ASCII: é o que o sintetizador lê (int(float(...))).

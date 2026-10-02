@@ -72,7 +72,32 @@ replanejamento nunca atrasa o rotor, e uma queda do Scheduler no meio de uma
 passagem não a interrompe. O Scheduler manda **uma ordem por passagem**, não um
 setpoint por segundo.
 
+### Ajuste fino da sintonia (AFC)
+
+Com `--fft-sources vhf=tcp://...:5582,uhf=...` (ou `STATION_FFT_SOURCES`), o
+Station Manager assina as medidas dos blocos FFT (`afc.<rádio>`: a que
+distância do centro a rajada chegou) e as integra num desvio por rádio
+(`domain.models.afc_step`), anunciado como `offset.<rádio>` a cada tick. O
+sintetizador soma: nominal + Doppler + desvio. Regras:
+
+- só durante a passagem e no rádio que ela usa; cada passagem começa do zero;
+- ganho 0,5, passo ≤ 2 kHz, total ≤ 8 kHz (`--afc-*`);
+- descarta a medida que chega até 1,5 s depois de um ajuste: foi feita com a
+  sintonia velha, e somá-la passaria do ponto;
+- o `get_tracking` mostra `offset_hz`, `afc_updates` e o último resíduo por
+  downlink — é dali que o Scheduler guarda o desvio aprendido.
+
+`--spectrum-bind` repassa o `fft.*` dos blocos num XPUB (zmq.proxy, thread
+própria): um endereço só para o Spectrum Monitor.
+
 ## Armadilhas
+
+- **Não chame atributo de subclasse de `Thread` de `_stop`** (nem `_started`):
+  são nomes internos do `threading.Thread`, e sobrescrevê-los quebra o
+  `join()`. Aconteceu no `AfcListener`; o teste que sobe a thread de verdade
+  pegou.
+- **Fontes FFT por IP, não por nome.** Os blocos só existem nos profiles de
+  recepção; um nome que não resolve num SUB foi medido calando o socket.
 
 - **O `[doppler]` sai com o satélite abaixo do horizonte também.** A elevação
   mínima (`--pointing-min-elevation`) só decide se o ROTOR se move; a
