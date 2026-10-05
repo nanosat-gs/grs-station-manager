@@ -14,7 +14,9 @@ os serviços são diferentes:
 |---|---|---|
 | 5580 | ZMQ REP (JSON) | **expõe** — quem pede: GRS Manager e TC Scheduler |
 | 5559 / 5560 | ZMQ PUSH / SUB (Rot2Prog binário) | **consome** — o Rotor Manager |
-| 5581 | ZMQ PUB (`freq` / `doppler`, por rádio) | **anuncia** — quem ouve: um `grs-frequency-synthesizer` por rádio |
+| 5581 | ZMQ PUB (`freq` / `doppler` / `offset`, por rádio) | **anuncia** — quem ouve: um `grs-frequency-synthesizer` por rádio |
+| 5582 | ZMQ SUB (`afc.<rádio>`) | **consome** — um `grs-fft` por rádio (`--fft-sources`) |
+| 5583 | ZMQ XPUB (`fft.<rádio>`) | **repassa** o espectro dos blocos FFT — quem ouve: `grs-spectrum-monitor` (`--spectrum-bind`) |
 
 ### Anúncio de sintonia (5581)
 
@@ -23,8 +25,9 @@ padrão de uma estação sem caminho de recepção.
 
     [b"freq",    b"<Hz>"]   portadora NOMINAL, uma vez por passagem
     [b"doppler", b"<Hz>"]   desvio do instante, a cada tick de apontamento
+    [b"offset",  b"<Hz>"]   ajuste fino (AFC), a cada tick — ver abaixo
 
-O sintetizador soma as duas e publica a frequência efetiva na :5557, de onde o
+O sintetizador soma as três e publica a frequência efetiva na :5557, de onde o
 receptor de IQ (retune por hardware) ou o demodulador (correção digital) a
 consomem — **a mesma mensagem serve aos dois**; qual deles age é configuração.
 
